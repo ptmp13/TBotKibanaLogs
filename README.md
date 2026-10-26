@@ -20,13 +20,50 @@ To run the application, you must set the following environment variables:
 | `ES_API_KEY` | The API Key for Elasticsearch authentication. | (Optional if not using API Key) |
 | `TG_TOKEN` | Your Telegram Bot API token. | (Required for Telegram alerts) |
 | `TG_CHAT_ID` | The Telegram Chat ID where messages will be sent. | (Required for Telegram alerts) |
+| `RULES_FILE` | Path to the YAML file containing custom alert rules. | `rules.yaml` |
 
-## How it works
+## Custom Alert Rules
 
-1. The application polls Elasticsearch every 30 seconds.
-2. it searches for documents where `"tsend": "false"`.
-3. For each match, it sends the `context_message` to Telegram.
-4. Once sent, it updates the document in Elasticsearch, setting `"tsend": "true"`.
+You can customize the alert messages based on the `rule_name` field by creating a YAML file (default `rules.yaml`).
+
+Example `rules.yaml`:
+
+```yaml
+- rule_name: "Elasticsearch query rule"
+  title: "👩‍🚒 Firing: ElasticsearchHealthyDataNodes"
+  message: "<context_message>"
+```
+
+The `<context_message>` placeholder in the `message` field will be replaced with the actual `context_message` from the Elasticsearch document.
+
+### Alert Filtering Logic
+- The application polls Elasticsearch every 30 seconds.
+- It searches for documents where `"tsend": "false"`.
+- It supports both firing and recovery alerts.
+- For each match, it sends the alert to Telegram using the appropriate rule template.
+- Once sent, it updates the document to set `"tsend": "true"`.
+
+### Rule Templates
+Rules now support `text/template` syntax for both `title` and `message` (including recovery variants). Available fields from the Elasticsearch document include:
+- `{{.RuleID}}`
+- `{{.RuleName}}`
+- `{{.AlertID}}`
+- `{{.ContextMessage}}`
+- `{{.Status}}` (e.g., "recovered")
+- `{{.URL}}`
+- `{{.SpaceID}}`
+- `{{.Link}}`
+- `{{.Alert}}` (the `alert` field from the index)
+
+Example `rules.yaml` with recovery support:
+
+```yaml
+- rule_name: "Elasticsearch query rule"
+  title: "👩‍🚒 Firing: ElasticsearchHealthyDataNodes"
+  recoveryTitle: "✅ Recovered: {{.SpaceID}} {{.Alert}}"
+  recoveryMessage: "{{.ContextMessage}}"
+  message: "{{.ContextMessage}}"
+```
 
 Note: The application is configured to skip SSL verification for HTTPS connections to Elasticsearch.
 

@@ -1,0 +1,5 @@
+- rule_name: "Elasticsearch query rule"
+  title: "👩‍🚒 Firing: ElasticsearchHealthyDataNodes"
+  recoveryTitle: "✅ Recovered: {{.SpaceID}} {{.Alert}}"
+  recoveryMessage: "{{.ContextMessage}}"
+  message: "{{.ContextMessage}}"
