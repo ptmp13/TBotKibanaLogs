@@ -3,3 +3,9 @@
   recoveryTitle: "✅ Recovered: {{.SpaceID}} {{.Alert}}"
   recoveryMessage: "{{.ContextMessage}}"
   message: "{{.ContextMessage}}"
+
+- rule_name: "Elasticsearch 2 rule"
+  title: "👩‍🚒 Firing: 2"
+  recoveryTitle: "✅ Recovered: {{.SpaceID}} {{.Alert}}"
+  recoveryMessage: "{{.ContextMessage}}"
+  message: "{{.ContextMessage}}"
