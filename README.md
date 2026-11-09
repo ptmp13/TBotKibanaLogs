@@ -21,20 +21,24 @@ To run the application, you must set the following environment variables:
 | `TG_TOKEN` | Your Telegram Bot API token. | (Required for Telegram alerts) |
 | `TG_CHAT_ID` | The Telegram Chat ID where messages will be sent. | (Required for Telegram alerts) |
 | `RULES_FILE` | Path to the YAML file containing custom alert rules. | `rules.yaml` |
+| `KIBANAURL` | The base URL for Kibana (including protocol). | `http://localhost` |
 
 ## Custom Alert Rules
 
-You can customize the alert messages based on the `rule_name` field by creating a YAML file (default `rules.yaml`).
+You can customize the alert messages based on the `rule_name` field by creating a YAML file (default `rules.yaml`). A special `rule_name: "default"` can be used to define a fallback template for all rules not explicitly defined.
 
 Example `rules.yaml`:
 
 ```yaml
-- rule_name: "Elasticsearch query rule"
-  title: "👩‍🚒 Firing: ElasticsearchHealthyDataNodes"
-  message: "<context_message>"
+- rule_name: "default"
+  title: "🚨 {{.SpaceID}} - {{.RuleName}}"
+  recoveryTitle: "✅ Recovered: {{.SpaceID}} - {{.RuleName}}"
+  message: |
+    {{.ContextMessage}}
+    URL: <a href="${KIBANAURL}{{.Link}}">link</a>
 ```
 
-The `<context_message>` placeholder in the `message` field will be replaced with the actual `context_message` from the Elasticsearch document.
+The application uses Telegram's **HTML parse mode**, allowing you to use tags like `<a>`, `<b>`, `<i>`, and `<code>` in your templates. Environment variables like `${KIBANAURL}` are expanded in the final message.
 
 ### Alert Filtering Logic
 - The application polls Elasticsearch every 30 seconds.
@@ -44,25 +48,31 @@ The `<context_message>` placeholder in the `message` field will be replaced with
 - Once sent, it updates the document to set `"tsend": "true"`.
 
 ### Rule Templates
-Rules now support `text/template` syntax for both `title` and `message` (including recovery variants). Available fields from the Elasticsearch document include:
-- `{{.RuleID}}`
-- `{{.RuleName}}`
-- `{{.AlertID}}`
-- `{{.ContextMessage}}`
-- `{{.Status}}` (e.g., "recovered")
-- `{{.URL}}`
-- `{{.SpaceID}}`
-- `{{.Link}}`
-- `{{.Alert}}` (the `alert` field from the index)
+Rules support `text/template` syntax for `title`, `message`, `recoveryTitle`, and `recoveryMessage`. Available fields from the Elasticsearch document include:
+- `{{.RuleID}}` - `rule_id`
+- `{{.RuleName}}` - `rule_name`
+- `{{.AlertID}}` - `alert_id`
+- `{{.ContextMessage}}` - `context_message`
+- `{{.Timestamp}}` - `@timestamp`
+- `{{.Status}}` - `status` (e.g., "recovered" or "firing")
+- `{{.URL}}` - `URL`
+- `{{.SpaceID}}` - `SpaceID`
+- `{{.Link}}` - `link` (path part of the Kibana URL)
+- `{{.Alert}}` - `alert`
 
-Example `rules.yaml` with recovery support:
+Environment variables in the form `${VAR_NAME}` can also be used in the message templates and will be expanded at runtime.
+
+Example `rules.yaml` with specific rule and recovery support:
 
 ```yaml
 - rule_name: "Elasticsearch query rule"
-  title: "👩‍🚒 Firing: ElasticsearchHealthyDataNodes"
-  recoveryTitle: "✅ Recovered: {{.SpaceID}} {{.Alert}}"
-  recoveryMessage: "{{.ContextMessage}}"
-  message: "{{.ContextMessage}}"
+  title: "🚨 {{.SpaceID}} - {{.RuleName}}"
+  recoveryTitle: "✅ Recovered: {{.SpaceID}} - {{.RuleName}}"
+  recoveryMessage: "The alert has cleared."
+  message: |
+    <b>Status:</b> Firing
+    {{.ContextMessage}}
+    <a href="${KIBANAURL}{{.Link}}">View in Kibana</a>
 ```
 
 Note: The application is configured to skip SSL verification for HTTPS connections to Elasticsearch.
@@ -79,6 +89,7 @@ Note: The application is configured to skip SSL verification for HTTPS connectio
    export ES_URL="https://your-elastic-host:9200"
    export ES_INDEX="telegaalert"
    export ES_API_KEY="your_api_key_here"
+   export KIBANAURL="http://192.168.97.11:5601"
    export TG_TOKEN="your_bot_token"
    export TG_CHAT_ID="-100123456789"
    ./tbot_kibana_logs

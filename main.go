@@ -75,6 +75,10 @@ func main() {
 	if esURL == "" {
 		esURL = "http://localhost:9200"
 	}
+	kibanaURL := os.Getenv("KIBANAURL")
+	if kibanaURL == "" {
+		kibanaURL = "http://localhost"
+	}
 	esIndex := os.Getenv("ES_INDEX")
 	if esIndex == "" {
 		esIndex = "telegaalert"
@@ -127,7 +131,7 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
-			processAlerts(es, esIndex, bot, rules)
+			processAlerts(es, esIndex, bot, rules, kibanaURL)
 		}
 	}
 }
@@ -144,7 +148,7 @@ func formatTemplate(tmplStr string, data any) string {
 	return buf.String()
 }
 
-func processAlerts(es *elasticsearch.Client, index string, bot *tgbotapi.BotAPI, rules map[string]Rule) {
+func processAlerts(es *elasticsearch.Client, index string, bot *tgbotapi.BotAPI, rules map[string]Rule, kibanaURL string) {
 	ctx := context.Background()
 
 	// 1. Search for documents where tsend is "false"
@@ -199,7 +203,12 @@ func processAlerts(es *elasticsearch.Client, index string, bot *tgbotapi.BotAPI,
 
 			if *chatID != 0 {
 				var msgText string
-				if rule, ok := rules[doc.RuleName]; ok {
+				rule, ok := rules[doc.RuleName]
+				if !ok {
+					rule, ok = rules["default"]
+				}
+
+				if ok {
 					title := rule.Title
 					message := rule.Message
 					if doc.Status == "recovered" {
@@ -214,16 +223,17 @@ func processAlerts(es *elasticsearch.Client, index string, bot *tgbotapi.BotAPI,
 					formattedMessage := formatTemplate(message, doc)
 					msgText = formattedTitle + "\n\n" + formattedMessage
 				} else {
-					statusEmoji := "🚨"
 					if doc.Status == "recovered" {
-						statusEmoji = "✅"
+						msgText = fmt.Sprintf("✅ Recovered: %s - %s", doc.SpaceID, doc.RuleName)
+					} else {
+						msgText = fmt.Sprintf("🚨 %s - %s\n%s\nURL: <a href=\"%s%s\">link</a>",
+							doc.SpaceID, doc.RuleName, doc.ContextMessage, kibanaURL, doc.Link)
 					}
-					msgText = fmt.Sprintf("%s *Alert: %s*\n\nStatus: %s\n%s\n\nRule: %s\nTime: %s",
-						statusEmoji, doc.AlertID, doc.Status, doc.ContextMessage, doc.RuleName, doc.Timestamp.Format(time.RFC3339))
 				}
+				msgText = os.ExpandEnv(msgText)
 
 				msg := tgbotapi.NewMessage(*chatID, msgText)
-				msg.ParseMode = "Markdown"
+				msg.ParseMode = "HTML"
 				_, err := bot.Send(msg)
 				if err != nil {
 					log.Printf("Error sending Telegram message: %s", err)
