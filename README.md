@@ -20,14 +20,15 @@ To run the application, you must set the following environment variables:
 | `ES_API_KEY` | The API Key for Elasticsearch authentication. | (Optional if not using API Key) |
 | `TG_TOKEN` | Your Telegram Bot API token. | (Required for Telegram alerts) |
 | `TG_CHAT_ID` | The Telegram Chat ID where messages will be sent. | (Required for Telegram alerts) |
-| `RULES_FILE` | Path to the YAML file containing custom alert rules. | `rules.yaml` |
+| `RULES_FILE` | Path to the YAML file containing custom alert rules. | `configs/rules.yaml` |
 | `KIBANAURL` | The base URL for Kibana (including protocol). | `http://localhost` |
+| `PORT` | The port for the HTTP health check server. | `8080` |
 
 ## Custom Alert Rules
 
-You can customize the alert messages based on the `rule_name` field by creating a YAML file (default `rules.yaml`). A special `rule_name: "default"` can be used to define a fallback template for all rules not explicitly defined.
+You can customize the alert messages based on the `rule_name` field by creating a YAML file (default `configs/rules.yaml`). A special `rule_name: "default"` can be used to define a fallback template for all rules not explicitly defined.
 
-Example `rules.yaml`:
+Example `configs/rules.yaml`:
 
 ```yaml
 - rule_name: "default"
@@ -62,7 +63,7 @@ Rules support `text/template` syntax for `title`, `message`, `recoveryTitle`, an
 
 Environment variables in the form `${VAR_NAME}` can also be used in the message templates and will be expanded at runtime.
 
-Example `rules.yaml` with specific rule and recovery support:
+Example `configs/rules.yaml` with specific rule and recovery support:
 
 ```yaml
 - rule_name: "Elasticsearch query rule"
@@ -76,6 +77,21 @@ Example `rules.yaml` with specific rule and recovery support:
 ```
 
 Note: The application is configured to skip SSL verification for HTTPS connections to Elasticsearch.
+
+## Health Check
+
+The application exposes an HTTP health check endpoint on `/health`. This can be used for Kubernetes liveness and readiness probes. The port is configurable via the `PORT` environment variable (default: `8080`).
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+```
 
 ## Running the Application
 
@@ -93,4 +109,10 @@ Note: The application is configured to skip SSL verification for HTTPS connectio
    export TG_TOKEN="your_bot_token"
    export TG_CHAT_ID="-100123456789"
    ./tbot_kibana_logs
+   ```
+
+3. **Run with Docker**:
+   ```bash
+   docker build -t tbot_kibana_logs .
+   docker run -e TG_TOKEN="your_token" -e TG_CHAT_ID="your_chat_id" -e ES_URL="http://elastic:9200" -p 8080:8080 tbot_kibana_logs
    ```

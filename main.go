@@ -116,7 +116,7 @@ func main() {
 	// Load custom rules
 	rulesPath := os.Getenv("RULES_FILE")
 	if rulesPath == "" {
-		rulesPath = "rules.yaml"
+		rulesPath = "configs/rules.yaml"
 	}
 	rules, err := loadRules(rulesPath)
 	if err != nil {
@@ -127,6 +127,22 @@ func main() {
 
 	ticker := time.NewTicker(30 * time.Second)
 	log.Println("Starting alert poller...")
+
+	// Start health check server
+	go func() {
+		http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("ok"))
+		})
+		port := os.Getenv("PORT")
+		if port == "" {
+			port = "8080"
+		}
+		log.Printf("Health check server starting on port %s", port)
+		if err := http.ListenAndServe(":"+port, nil); err != nil {
+			log.Printf("Health check server failed: %s", err)
+		}
+	}()
 
 	for {
 		select {
@@ -188,17 +204,38 @@ func processAlerts(es *elasticsearch.Client, index string, bot *tgbotapi.BotAPI,
 		return
 	}
 
-	for _, hit := range r.Hits.Hits {
-		doc := hit.Source
-		log.Printf("Processing alert: %s", hit.ID)
+	if len(r.Hits.Hits) == 0 {
+		return
+	}
 
-		// 2. Send Telegram alert
+	// 2. Group alerts by rule_name + SpaceID + status
+	type groupKey struct {
+		RuleName string
+		SpaceID  string
+		Status   string
+	}
+	groups := make(map[groupKey][]string) // key -> list of document IDs
+	groupDocs := make(map[groupKey]AlertDoc)
+
+	for _, hit := range r.Hits.Hits {
+		key := groupKey{
+			RuleName: hit.Source.RuleName,
+			SpaceID:  hit.Source.SpaceID,
+			Status:   hit.Source.Status,
+		}
+		groups[key] = append(groups[key], hit.ID)
+		if _, ok := groupDocs[key]; !ok {
+			groupDocs[key] = hit.Source
+		}
+	}
+
+	for key, ids := range groups {
+		doc := groupDocs[key]
+		log.Printf("Processing group: %+v with %d alerts", key, len(ids))
+
+		// 3. Send Telegram alert (one per group)
 		if bot != nil {
-			// Get Chat ID from env or somewhere. If not set, we can't send.
-			// In this example, I'll assume we want to send it.
-			// Ideally, the chat_id might be in the document or config.
 			chatID := new(int64)
-			// For now, let's just log it if chat ID is missing
 			fmt.Sscanf(os.Getenv("TG_CHAT_ID"), "%d", chatID)
 
 			if *chatID != 0 {
@@ -236,45 +273,55 @@ func processAlerts(es *elasticsearch.Client, index string, bot *tgbotapi.BotAPI,
 				msg.ParseMode = "HTML"
 				_, err := bot.Send(msg)
 				if err != nil {
-					log.Printf("Error sending Telegram message: %s", err)
-					continue // Don't update ES if notification failed? Or maybe we should?
+					log.Printf("Error sending Telegram message for group %+v: %s", key, err)
+					continue
 				}
 			} else {
 				log.Println("TG_CHAT_ID not set, skipping Telegram notification.")
 			}
 		}
 
-		// 3. Update tsend to "true"
-		updateDoc := map[string]any{
-			"doc": map[string]any{
-				"tsend": "true",
+		// 4. Update all documents in the group to tsend: "true"
+		// Using _update_by_query for efficiency
+		updateQuery := map[string]any{
+			"script": map[string]any{
+				"source": "ctx._source.tsend = 'true'",
+				"lang":   "painless",
+			},
+			"query": map[string]any{
+				"bool": map[string]any{
+					"filter": []any{
+						map[string]any{"term": map[string]any{"rule_name.keyword": key.RuleName}},
+						map[string]any{"term": map[string]any{"SpaceID.keyword": key.SpaceID}},
+						map[string]any{"term": map[string]any{"status.keyword": key.Status}},
+						map[string]any{"term": map[string]any{"tsend": "false"}},
+					},
+				},
 			},
 		}
+
 		var upBuf bytes.Buffer
-		if err := json.NewEncoder(&upBuf).Encode(updateDoc); err != nil {
-			log.Printf("Error encoding update doc for %s: %s", hit.ID, err)
+		if err := json.NewEncoder(&upBuf).Encode(updateQuery); err != nil {
+			log.Printf("Error encoding update query for group %+v: %s", key, err)
 			continue
 		}
 
-		upRes, err := es.Update(
-			index,
-			hit.ID,
-			&upBuf,
-			es.Update.WithContext(ctx),
-			es.Update.WithRefresh("true"),
+		upRes, err := es.UpdateByQuery(
+			[]string{index},
+			es.UpdateByQuery.WithContext(ctx),
+			es.UpdateByQuery.WithBody(&upBuf),
+			es.UpdateByQuery.WithRefresh(true),
 		)
 		if err != nil {
-			log.Printf("Error executing update request for document %s: %s", hit.ID, err)
+			log.Printf("Error executing update by query for group %+v: %s", key, err)
 			continue
 		}
 		defer upRes.Body.Close()
 
 		if upRes.IsError() {
-			var errResp map[string]any
-			json.NewDecoder(upRes.Body).Decode(&errResp)
-			log.Printf("Error updating document %s. Status: %s, Response: %+v", hit.ID, upRes.Status(), errResp)
+			log.Printf("Error response from update by query for group %+v: %s", key, upRes.String())
 		} else {
-			log.Printf("Successfully processed and updated alert %s", hit.ID)
+			log.Printf("Successfully updated all alerts in group %+v", key)
 		}
 	}
 }
