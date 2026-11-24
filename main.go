@@ -6,9 +6,11 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"html"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"text/template"
 	"time"
 
@@ -233,6 +235,14 @@ func processAlerts(es *elasticsearch.Client, index string, bot *tgbotapi.BotAPI,
 		doc := groupDocs[key]
 		log.Printf("Processing group: %+v with %d alerts", key, len(ids))
 
+		// Escape doc fields for HTML
+		doc.SpaceID = html.EscapeString(doc.SpaceID)
+		doc.RuleName = html.EscapeString(doc.RuleName)
+		doc.ContextMessage = html.EscapeString(doc.ContextMessage)
+		// doc.Link should probably NOT be escaped fully if it's used in href,
+		// but Telegram HTML requires escaping & in href too.
+		doc.Link = html.EscapeString(doc.Link)
+
 		// 3. Send Telegram alert (one per group)
 		if bot != nil {
 			chatID := new(int64)
@@ -245,6 +255,9 @@ func processAlerts(es *elasticsearch.Client, index string, bot *tgbotapi.BotAPI,
 					rule, ok = rules["default"]
 				}
 
+				// Prepare Kibana Link
+				fullKibanaURL := strings.TrimSuffix(kibanaURL, "/") + "/" + strings.TrimPrefix(doc.Link, "/")
+
 				if ok {
 					title := rule.Title
 					message := rule.Message
@@ -256,6 +269,14 @@ func processAlerts(es *elasticsearch.Client, index string, bot *tgbotapi.BotAPI,
 							message = rule.RecoveryMessage
 						}
 					}
+					// Replace ${KIBANAURL} in templates with the prepared URL
+					// We do this before template execution so it can be used if needed,
+					// but wait, the template might already have it.
+					// Actually, os.ExpandEnv handles ${KIBANAURL}.
+					// But we want to ensure it's joined correctly.
+					// Let's set KIBANAURL env var for this goroutine/process context if we want ExpandEnv to work well,
+					// or just replace it manually.
+
 					formattedTitle := formatTemplate(title, doc)
 					formattedMessage := formatTemplate(message, doc)
 					msgText = formattedTitle + "\n\n" + formattedMessage
@@ -263,17 +284,19 @@ func processAlerts(es *elasticsearch.Client, index string, bot *tgbotapi.BotAPI,
 					if doc.Status == "recovered" {
 						msgText = fmt.Sprintf("✅ Recovered: %s - %s", doc.SpaceID, doc.RuleName)
 					} else {
-						msgText = fmt.Sprintf("🚨 %s - %s\n%s\nURL: <a href=\"%s%s\">link</a>",
-							doc.SpaceID, doc.RuleName, doc.ContextMessage, kibanaURL, doc.Link)
+						msgText = fmt.Sprintf("🚨 %s - %s\n%s\nURL: <a href=\"%s\">link</a>",
+							doc.SpaceID, doc.RuleName, doc.ContextMessage, fullKibanaURL)
 					}
 				}
+
+				os.Setenv("KIBANAURL", strings.TrimSuffix(kibanaURL, "/"))
 				msgText = os.ExpandEnv(msgText)
 
 				msg := tgbotapi.NewMessage(*chatID, msgText)
 				msg.ParseMode = "HTML"
 				_, err := bot.Send(msg)
 				if err != nil {
-					log.Printf("Error sending Telegram message for group %+v: %s", key, err)
+					log.Printf("Error sending Telegram message for group %+v: %s. Message was: %q", key, err, msgText)
 					continue
 				}
 			} else {
@@ -288,12 +311,13 @@ func processAlerts(es *elasticsearch.Client, index string, bot *tgbotapi.BotAPI,
 				"source": "ctx._source.tsend = 'true'",
 				"lang":   "painless",
 			},
+			// Select by document IDs found in the search above instead of `<field>.keyword`
+			// sub-fields: data streams usually have explicit mappings where these fields are
+			// already `keyword` and have no `.keyword` sub-field, so such a query matches nothing.
 			"query": map[string]any{
 				"bool": map[string]any{
 					"filter": []any{
-						map[string]any{"term": map[string]any{"rule_name.keyword": key.RuleName}},
-						map[string]any{"term": map[string]any{"SpaceID.keyword": key.SpaceID}},
-						map[string]any{"term": map[string]any{"status.keyword": key.Status}},
+						map[string]any{"ids": map[string]any{"values": ids}},
 						map[string]any{"term": map[string]any{"tsend": "false"}},
 					},
 				},
@@ -311,17 +335,35 @@ func processAlerts(es *elasticsearch.Client, index string, bot *tgbotapi.BotAPI,
 			es.UpdateByQuery.WithContext(ctx),
 			es.UpdateByQuery.WithBody(&upBuf),
 			es.UpdateByQuery.WithRefresh(true),
+			es.UpdateByQuery.WithConflicts("proceed"),
 		)
 		if err != nil {
 			log.Printf("Error executing update by query for group %+v: %s", key, err)
 			continue
 		}
-		defer upRes.Body.Close()
 
 		if upRes.IsError() {
 			log.Printf("Error response from update by query for group %+v: %s", key, upRes.String())
+			upRes.Body.Close()
+			continue
+		}
+
+		var upResult struct {
+			Updated          int64 `json:"updated"`
+			VersionConflicts int64 `json:"version_conflicts"`
+			Failures         []any `json:"failures"`
+		}
+		decErr := json.NewDecoder(upRes.Body).Decode(&upResult)
+		upRes.Body.Close()
+		if decErr != nil {
+			log.Printf("Error parsing update by query response for group %+v: %s", key, decErr)
+			continue
+		}
+		if upResult.Updated == 0 || len(upResult.Failures) > 0 {
+			log.Printf("Update by query for group %+v updated %d of %d docs (conflicts: %d, failures: %v)",
+				key, upResult.Updated, len(ids), upResult.VersionConflicts, upResult.Failures)
 		} else {
-			log.Printf("Successfully updated all alerts in group %+v", key)
+			log.Printf("Successfully updated %d alerts in group %+v", upResult.Updated, key)
 		}
 	}
 }

@@ -1,0 +1,17 @@
+# This is default rule for all if you not override it by rule name
+- rule_name: "default"
+  title: "🚨 {{.SpaceID}} - {{.RuleName}}"
+  recoveryTitle: "✅ Recovered: {{.SpaceID}} - {{.RuleName}}"
+  recoveryMessage: ""
+  message: |
+    {{.ContextMessage}}
+    URL: <a href="${KIBANAURL}{{.Link}}">link</a>
+
+# For specific rule name - rule name in kibana must = this rule_name
+- rule_name: "Elasticsearch query rule"
+  title: "🚨 {{.SpaceID}} - {{.RuleName}}"
+  recoveryTitle: "✅ Recovered: {{.SpaceID}} - {{.RuleName}}"
+  recoveryMessage: ""
+  message: |
+    {{.ContextMessage}}
+    <b>URL</b>: <a href="${KIBANAURL}{{.Link}}">link</a>
